@@ -262,7 +262,7 @@ if ejecutar:
                 import gspread
                 from google.oauth2.service_account import Credentials
                 SCOPES = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
-                creds = Credentials.from_service_account_file(r"C:\simulador_att\credenciales.json", scopes=SCOPES)
+                creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=SCOPES) if "gcp_service_account" in st.secrets else Credentials.from_service_account_file(r"C:\simulador_att\credenciales.json", scopes=SCOPES)
                 gc = gspread.authorize(creds)
                 sh = gc.open_by_key("1CWe7TWc2fieQBowRabPSxlvc6mrkocF-UnCYhaDWxSM")
                 ws = sh.sheet1
@@ -490,7 +490,7 @@ with tab5:
             import gspread
             from google.oauth2.service_account import Credentials
             SCOPES = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
-            creds = Credentials.from_service_account_file(r"C:\simulador_att\credenciales.json", scopes=SCOPES)
+            creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=SCOPES) if "gcp_service_account" in st.secrets else Credentials.from_service_account_file(r"C:\simulador_att\credenciales.json", scopes=SCOPES)
             gc = gspread.authorize(creds)
             sh = gc.open_by_key("1CWe7TWc2fieQBowRabPSxlvc6mrkocF-UnCYhaDWxSM")
             ws = sh.sheet1
