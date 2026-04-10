@@ -683,10 +683,67 @@ def registrar_trazabilidad(nom_p, nit_p, regional, tipo_est, total, reps_inv, im
     return id_caso
 
 def _get_drive_service():
-    """Cliente Drive cacheado — se construye una sola vez por sesión."""
+    """Cliente Drive — se construye una sola vez por sesión."""
     from googleapiclient.discovery import build
     creds = get_credentials()
     return build('drive', 'v3', credentials=creds)
+
+@st.cache_data(show_spinner=False, ttl=7200)
+def cargar_todas_las_bases():
+    """Descarga TODAS las bases de Drive una sola vez y las cachea 2 horas.
+    Se ejecuta al iniciar la app, no al presionar Ejecutar."""
+    bases = {}
+    try:
+        # Pisos y techos
+        _lista = listar_archivos_carpeta(FOLDERS["Pisos_y_Techos"])
+        _nombre = next((f['name'] for f in _lista if f['name'].endswith(('.xlsx','.xls'))), None)
+        if _nombre:
+            _buf = cargar_desde_drive(_nombre, FOLDERS["Pisos_y_Techos"])
+            bases['pt'] = pd.read_excel(_buf) if _buf else None
+        else:
+            bases['pt'] = None
+    except: bases['pt'] = None
+
+    try:
+        # REPS
+        _lista = listar_archivos_carpeta(FOLDERS["REPS"])
+        _nombre = next((f['name'] for f in _lista if f['name'].endswith(('.xlsx','.xls'))), None)
+        if _nombre:
+            _buf = cargar_desde_drive(_nombre, FOLDERS["REPS"])
+            bases['reps'] = pd.read_excel(_buf) if _buf else None
+        else:
+            bases['reps'] = None
+    except: bases['reps'] = None
+
+    try:
+        # Convenios (TXT pipe)
+        _lista = listar_archivos_carpeta(FOLDERS["Convenios_Vigentes"])
+        _dfs = []
+        for _f in _lista:
+            _buf = cargar_desde_drive(_f['name'], FOLDERS["Convenios_Vigentes"])
+            if _buf:
+                _df = cargar_txt_pipe(_buf)
+                if _df is not None: _dfs.append(_df)
+        bases['convenios'] = pd.concat(_dfs, ignore_index=True) if _dfs else None
+    except: bases['convenios'] = None
+
+    try:
+        bases['homologacion'] = cargar_base_excel("Homologacion")
+    except: bases['homologacion'] = None
+
+    try:
+        bases['costo_medio'] = cargar_base_excel("Costo_medio_evento")
+    except: bases['costo_medio'] = None
+
+    try:
+        bases['tabla_qx'] = cargar_base_excel("Tabla_QX")
+    except: bases['tabla_qx'] = None
+
+    try:
+        bases['insumos'] = cargar_base_excel("Insumos_Dispositivos")
+    except: bases['insumos'] = None
+
+    return bases
 
 def cargar_desde_drive(nombre_archivo, folder_id=None):
     if not nombre_archivo:
@@ -975,6 +1032,12 @@ usuario_email = st.session_state.usuario_email
 usuario_nombre = st.session_state.usuario_nombre
 es_admin_user = st.session_state.es_admin
 
+# Cargar todas las bases al inicio (cacheadas 2 horas — no se repite al ejecutar)
+if 'bases_drive' not in st.session_state:
+    with st.spinner("⏳ Cargando bases de referencia desde Drive (solo una vez)..."):
+        st.session_state.bases_drive = cargar_todas_las_bases()
+_bases = st.session_state.bases_drive
+
 with st.sidebar:
     st.markdown("## 🏥 Simulador ATT")
     st.markdown("**EPS Sanitas**")
@@ -1099,36 +1162,13 @@ if ejecutar:
                 st.error(f"⛔ No se pudo leer la hoja 'Solicitud': {_e}\n\nVerifica que el Excel tiene una hoja llamada exactamente **Solicitud**.")
                 st.stop()
 
-            # ── Bases de referencia: manual si se subieron, si no desde Drive ──
-            if pt_up:
-                pt = pd.read_excel(pt_up)
-                st.toast("✅ Pisos y techos cargados manualmente")
-            else:
-                with st.spinner("Cargando Pisos y techos desde Drive..."):
-                    try:
-                        _archivos_pt = listar_archivos_carpeta(FOLDERS["Pisos_y_Techos"])
-                        _nombre_pt = next((f['name'] for f in _archivos_pt if f['name'].endswith(('.xlsx','.xls'))), None)
-                        pt_buf = cargar_desde_drive(_nombre_pt, FOLDERS["Pisos_y_Techos"]) if _nombre_pt else None
-                        pt = pd.read_excel(pt_buf) if pt_buf else None
-                    except:
-                        pt = None
-                if pt is None:
-                    st.warning("⚠️ No se pudo cargar Pisos y techos desde Drive. Puedes subirlo manualmente en el panel izquierdo.")
-
-            if reps_up:
-                reps = pd.read_excel(reps_up)
-                st.toast("✅ REPS cargado manualmente")
-            else:
-                with st.spinner("Cargando REPS desde Drive..."):
-                    try:
-                        _archivos_reps = listar_archivos_carpeta(FOLDERS["REPS"])
-                        _nombre_reps = next((f['name'] for f in _archivos_reps if f['name'].endswith(('.xlsx','.xls'))), None)
-                        reps_buf = cargar_desde_drive(_nombre_reps, FOLDERS["REPS"]) if _nombre_reps else None
-                        reps = pd.read_excel(reps_buf) if reps_buf else None
-                    except:
-                        reps = None
-                if reps is None:
-                    st.warning("⚠️ No se pudo cargar REPS desde Drive. Puedes subirlo manualmente en el panel izquierdo.")
+            # ── Bases desde caché (ya cargadas al iniciar sesión) ──────────
+            pt   = _bases.get('pt')
+            reps = _bases.get('reps')
+            if pt is None:
+                st.warning("⚠️ Pisos y techos no disponible.")
+            if reps is None:
+                st.warning("⚠️ REPS no disponible.")
 
             # RN-01: Validar estructura
             es_valido, errores, advertencias = validar_estructura(sol)
@@ -1149,53 +1189,25 @@ if ejecutar:
             insumos_df = None
             bases_cargadas = {}
 
-            # Bases adicionales desde Drive
-            with st.spinner("Cargando bases de referencia desde Drive..."):
-                try:
-                    convenios_df = cargar_convenios_regional(regional)
-                    if convenios_df is not None and len(convenios_df) > 0:
-                        bases_cargadas["Convenios_Vigentes"] = {"ok": True, "registros": f"{len(convenios_df):,}"}
-                        col_prest = next((c2 for c2 in convenios_df.columns if 'Nombre Prestador' in c2 or 'Prestador' in c2), None)
-                        if col_prest:
-                            st.session_state.prest_disponibles_drive = sorted(convenios_df[col_prest].dropna().unique().tolist())
-                    else:
-                        bases_cargadas["Convenios_Vigentes"] = {"ok": False}
-                except: bases_cargadas["Convenios_Vigentes"] = {"ok": False}
+            # Bases adicionales desde caché
+            convenios_df    = _bases.get('convenios')
+            homologacion_df = _bases.get('homologacion')
+            costo_medio_df  = _bases.get('costo_medio')
+            tabla_qx_df     = _bases.get('tabla_qx')
+            insumos_df      = _bases.get('insumos')
 
-                try:
-                    homologacion_df = cargar_base_excel("Homologacion")
-                    if homologacion_df is not None:
-                        bases_cargadas["Homologacion"] = {"ok": True, "registros": f"{len(homologacion_df):,}"}
-                    else:
-                        bases_cargadas["Homologacion"] = {"ok": False}
-                except: bases_cargadas["Homologacion"] = {"ok": False}
+            bases_cargadas["Convenios_Vigentes"]    = {"ok": True, "registros": f"{len(convenios_df):,}"} if convenios_df is not None else {"ok": False}
+            bases_cargadas["Homologacion"]           = {"ok": True, "registros": f"{len(homologacion_df):,}"} if homologacion_df is not None else {"ok": False}
+            bases_cargadas["Costo_medio_evento"]     = {"ok": True, "registros": f"{len(costo_medio_df):,}"} if costo_medio_df is not None else {"ok": False}
+            bases_cargadas["Tabla_QX"]               = {"ok": True, "registros": f"{len(tabla_qx_df):,}"} if tabla_qx_df is not None else {"ok": False}
+            bases_cargadas["Insumos_Dispositivos"]   = {"ok": True, "registros": f"{len(insumos_df):,}"} if insumos_df is not None else {"ok": False}
+            bases_cargadas["Casuistica_Poblacional"] = {"pendiente": True}
+            bases_cargadas["Medicamentos"]           = {"pendiente": True}
 
-                try:
-                    costo_medio_df = cargar_base_excel("Costo_medio_evento")
-                    if costo_medio_df is not None:
-                        bases_cargadas["Costo_medio_evento"] = {"ok": True, "registros": f"{len(costo_medio_df):,}"}
-                    else:
-                        bases_cargadas["Costo_medio_evento"] = {"ok": False}
-                except: bases_cargadas["Costo_medio_evento"] = {"ok": False}
-
-                try:
-                    tabla_qx_df = cargar_base_excel("Tabla_QX")
-                    if tabla_qx_df is not None:
-                        bases_cargadas["Tabla_QX"] = {"ok": True, "registros": f"{len(tabla_qx_df):,}"}
-                    else:
-                        bases_cargadas["Tabla_QX"] = {"ok": False}
-                except: bases_cargadas["Tabla_QX"] = {"ok": False}
-
-                try:
-                    insumos_df = cargar_base_excel("Insumos_Dispositivos")
-                    if insumos_df is not None:
-                        bases_cargadas["Insumos_Dispositivos"] = {"ok": True, "registros": f"{len(insumos_df):,}"}
-                    else:
-                        bases_cargadas["Insumos_Dispositivos"] = {"ok": False}
-                except: bases_cargadas["Insumos_Dispositivos"] = {"ok": False}
-
-                bases_cargadas["Casuistica_Poblacional"] = {"pendiente": True}
-                bases_cargadas["Medicamentos"] = {"pendiente": True}
+            if convenios_df is not None:
+                col_prest = next((c2 for c2 in convenios_df.columns if 'Nombre Prestador' in c2 or 'Prestador' in c2), None)
+                if col_prest:
+                    st.session_state.prest_disponibles_drive = sorted(convenios_df[col_prest].dropna().unique().tolist())
 
             # Siempre registrar REPS y Pisos y Techos
             if reps is not None:
